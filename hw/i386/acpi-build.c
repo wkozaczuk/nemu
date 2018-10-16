@@ -62,6 +62,7 @@
 #include "qom/qom-qobject.h"
 #include "hw/i386/amd_iommu.h"
 #include "hw/i386/intel_iommu.h"
+#include "hw/i386/acpi.h"
 
 #include "hw/acpi/ipmi.h"
 
@@ -281,9 +282,8 @@ void pc_madt_cpu_entry(AcpiDeviceIf *adev, int uid,
     }
 }
 
-static void
-build_madt(GArray *table_data, BIOSLinker *linker,
-           MachineState *ms, AcpiConfiguration *conf)
+GArray *build_madt(GArray *table_data, BIOSLinker *linker,
+                   MachineState *ms, AcpiConfiguration *conf)
 {
     MachineClass *mc = MACHINE_GET_CLASS(ms);
     const CPUArchIdList *apic_ids = mc->possible_cpu_arch_ids(ms);
@@ -360,6 +360,8 @@ build_madt(GArray *table_data, BIOSLinker *linker,
     build_header(linker, table_data,
                  (void *)(table_data->data + madt_start), "APIC",
                  table_data->len - madt_start, 1, NULL, NULL);
+
+    return table_data;
 }
 
 static void build_hpet_aml(Aml *table)
@@ -1544,6 +1546,7 @@ static
 void acpi_build(AcpiBuildTables *tables,
                 MachineState *machine, AcpiConfiguration *conf)
 {
+    MachineClass *mc = MACHINE_GET_CLASS(machine);
     GArray *table_offsets;
     unsigned facs, dsdt, rsdt, fadt;
     AcpiPmInfo pm;
@@ -1604,7 +1607,8 @@ void acpi_build(AcpiBuildTables *tables,
     aml_len += tables_blob->len - fadt;
 
     acpi_add_table(table_offsets, tables_blob);
-    build_madt(tables_blob, tables->linker, machine, conf);
+    mc->firmware_build_methods.acpi.madt(tables_blob, tables->linker,
+                                         machine, conf);
 
     vmgenid_dev = find_vmgenid_dev();
     if (vmgenid_dev) {
@@ -1628,15 +1632,17 @@ void acpi_build(AcpiBuildTables *tables,
     }
     if (conf->numa_nodes) {
         acpi_add_table(table_offsets, tables_blob);
-        build_srat(tables_blob, tables->linker, machine, conf);
+        mc->firmware_build_methods.acpi.srat(tables_blob, tables->linker,
+                                             machine, conf);
         if (have_numa_distance) {
             acpi_add_table(table_offsets, tables_blob);
-            build_slit(tables_blob, tables->linker);
+            mc->firmware_build_methods.acpi.slit(tables_blob, tables->linker);
         }
     }
     if (acpi_get_mcfg(&mcfg)) {
         acpi_add_table(table_offsets, tables_blob);
-        build_mcfg(tables_blob, tables->linker, &mcfg);
+        mc->firmware_build_methods.acpi.mcfg(tables_blob, tables->linker,
+                                             &mcfg);
     }
     if (x86_iommu_get_default()) {
         IommuType IOMMUType = x86_iommu_get_type();
@@ -1667,7 +1673,7 @@ void acpi_build(AcpiBuildTables *tables,
                slic_oem.id, slic_oem.table_id);
 
     /* RSDP is in FSEG memory, so allocate it separately */
-    build_rsdp_rsdt(tables->rsdp, tables->linker, rsdt);
+    mc->firmware_build_methods.acpi.rsdp(tables->rsdp, tables->linker, rsdt);
 
     /* We'll expose it all to Guest so we want to reduce
      * chance of size changes.
